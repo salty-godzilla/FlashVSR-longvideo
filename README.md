@@ -5,7 +5,8 @@
 **Authors:** Junhao Zhuang, Shi Guo, Xin Cai, Xiaohui Li, Yihao Liu, Chun Yuan, Tianfan Xue
 
 <a href='http://zhuang2002.github.io/FlashVSR'><img src='https://img.shields.io/badge/Project-Page-Green'></a> &nbsp;
-<a href="https://huggingface.co/JunhaoZhuang/FlashVSR"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-blue"></a> &nbsp;
+<a href="https://huggingface.co/JunhaoZhuang/FlashVSR"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model%20(v1)-blue"></a> &nbsp;
+<a href="https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model%20(v1.1)-blue"></a> &nbsp;
 <a href="https://huggingface.co/datasets/JunhaoZhuang/VSR-120K"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-orange"></a> &nbsp;
 <a href="https://arxiv.org/abs/2510.12747"><img src="https://img.shields.io/badge/arXiv-2510.12747-b31b1b.svg"></a>
 
@@ -23,7 +24,8 @@ Diffusion models have recently advanced video restoration, but applying them to 
 
 ### 📰 News
 
-- **Release Date:** October 2025 — Inference code and model weights are available now! 🎉  
+- **Nov 2025 — 🎉 [FlashVSR v1.1](https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1) released:** enhanced stability + fidelity  
+- **Oct 2025 — [FlashVSR v1](https://huggingface.co/JunhaoZhuang/FlashVSR)  (initial release)**: Inference code and model weights are available now! 🎉  
 - **Bug Fix (October 21, 2025):** Fixed `local_attention_mask` update logic to prevent artifacts when switching between different aspect ratios during continuous inference.  
 - **Coming Soon:** Dataset release (**VSR-120K**) for large-scale training.
 
@@ -109,7 +111,8 @@ python setup.py install
 
 #### 4️⃣ Download Model Weights from Hugging Face
 
-Weights are hosted on **Hugging Face** via **Git LFS**. Please install Git LFS first:
+FlashVSR provides both **v1** and **v1.1** model weights on Hugging Face (via **Git LFS**).  
+Please install Git LFS first:
 
 ```bash
 # From the repo root
@@ -118,34 +121,48 @@ cd examples/WanVSR
 # Install Git LFS (once per machine)
 git lfs install
 
-# Clone the model repository into examples/WanVSR
-git lfs clone https://huggingface.co/JunhaoZhuang/FlashVSR
+# Clone v1 (original) or v1.1 (recommended)
+git lfs clone https://huggingface.co/JunhaoZhuang/FlashVSR          # v1
+# or
+git lfs clone https://huggingface.co/JunhaoZhuang/FlashVSR-v1.1      # v1.1
 ```
 
-After cloning, you should have:
+After cloning, you should have one of the following folders:
 
 ```
-./examples/WanVSR/FlashVSR/
+./examples/WanVSR/FlashVSR/          # v1
+./examples/WanVSR/FlashVSR-v1.1/     # v1.1
 │
-├── LQ_proj_in.ckpt                                   
-├── TCDecoder.ckpt                                    
-├── Wan2.1_VAE.pth                                    
-├── diffusion_pytorch_model_streaming_dmd.safetensors 
+├── LQ_proj_in.ckpt
+├── TCDecoder.ckpt
+├── Wan2.1_VAE.pth
+├── diffusion_pytorch_model_streaming_dmd.safetensors
 └── README.md
 ```
 
-> The inference scripts will load weights from `./examples/WanVSR/FlashVSR/` by default.
+> Inference scripts automatically load weights from the corresponding folder.
+
+---
 
 #### 5️⃣ Run Inference
 
 ```bash
 # From the repo root
 cd examples/WanVSR
-python infer_flashvsr_full.py      # Full model
+
+# v1 (original)
+python infer_flashvsr_full.py
 # or
-python infer_flashvsr_tiny.py      # Tiny model
+python infer_flashvsr_tiny.py
 # or
-python infer_flashvsr_tiny_long_video.py      # Tiny model for long videos
+python infer_flashvsr_tiny_long_video.py
+
+# v1.1 (recommended)
+python infer_flashvsr_v1.1_full.py
+# or
+python infer_flashvsr_v1.1_tiny.py
+# or
+python infer_flashvsr_v1.1_tiny_long_video.py
 ```
 
 ---

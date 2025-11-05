@@ -161,12 +161,12 @@ def init_pipeline():
     print(torch.cuda.current_device(), torch.cuda.get_device_name(torch.cuda.current_device()))
     mm = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
     mm.load_models([
-        "./FlashVSR/diffusion_pytorch_model_streaming_dmd.safetensors",
-        "./FlashVSR/Wan2.1_VAE.pth",
+        "./FlashVSR-v1.1/diffusion_pytorch_model_streaming_dmd.safetensors",
+        "./FlashVSR-v1.1/Wan2.1_VAE.pth",
     ])
     pipe = FlashVSRFullPipeline.from_model_manager(mm, device="cuda")
     pipe.denoising_model().LQ_proj_in = Causal_LQ4x_Proj(in_dim=3, out_dim=1536, layer_num=1).to("cuda", dtype=torch.bfloat16)
-    LQ_proj_in_path = "./FlashVSR/LQ_proj_in.ckpt"
+    LQ_proj_in_path = "./FlashVSR-v1.1/LQ_proj_in.ckpt"
     if os.path.exists(LQ_proj_in_path):
         pipe.denoising_model().LQ_proj_in.load_state_dict(torch.load(LQ_proj_in_path, map_location="cpu"), strict=True)
 
