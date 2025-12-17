@@ -257,9 +257,10 @@ def main():
 
             # 3. Compute Target Frames (Padding Logic)
             # Original logic: idx = list(range(total)) + [total-1]*4, then F = largest_8n1_leq(...)
-            idx_len = total + 4
-            F = largest_8n1_leq(idx_len)
-            print(f"[{name}] Target Frames (8n-3): {F-4}")
+            # Modified: Ensure output (F-4) >= total to prevent frame dropping
+            min_F = total + 4
+            F = ((min_F - 2) // 8 + 1) * 8 + 1
+            print(f"[{name}] Target Frames (8n-3): {F-4} (Original: {total})")
             
             # 4. Initialize Video Writer
             save_path = os.path.join(RESULT_ROOT, f"FlashVSR_v1.1_Tiny_Long_{name.split('.')[0]}_seed{seed}.mp4")
@@ -283,14 +284,19 @@ def main():
                 loader.cleanup(start_idx - 100)
                 return loader.get_batch(start_idx, end_idx)
 
+            saved_count = 0
             def save_output_chunk(video_tensor):
+                nonlocal saved_count
                 # video_tensor: 1 C F_chunk H W
                 pil_frames = tensor2video(video_tensor[0])
                 
                 for pf in pil_frames:
+                    if saved_count >= total:
+                        continue
                     # Convert PIL RGB to CV2 BGR
                     frame_bgr = cv2.cvtColor(np.array(pf), cv2.COLOR_RGB2BGR)
                     writer.write(frame_bgr)
+                    saved_count += 1
 
             # 6. Run Pipeline
             pipe(
