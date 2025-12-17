@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, re, time, threading
+import os, re, time, threading, argparse
 from queue import Queue
 import numpy as np
 from PIL import Image
@@ -220,11 +220,16 @@ class AsyncVideoWriter:
 def main():
     RESULT_ROOT = "./results"
     os.makedirs(RESULT_ROOT, exist_ok=True)
-    inputs = [
-        "./example.mp4",
-    ]
-    seed, scale, dtype, device = 0, 4.0, torch.bfloat16, 'cuda'
-    sparse_ratio = 2.0      # Recommended: 1.5 or 2.0. 1.5 → faster; 2.0 → more stable.
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-i', '--video', type=str, required=True, help='Path to input video')
+    parser.add_argument('--sparse_ratio', type=float, default=2.0, help='Sparse ratio. Recommended: 1.5 or 2.0. 1.5 → faster; 2.0 → more stable.')
+    parser.add_argument('--scale', type=float, required=True, help='Upscale factor')
+    args = parser.parse_args()
+
+    inputs = [args.video]
+    seed, dtype, device = 0, torch.bfloat16, 'cuda'
+    scale = args.scale
+    sparse_ratio = args.sparse_ratio
     pipe = init_pipeline()
 
     for p in inputs:
