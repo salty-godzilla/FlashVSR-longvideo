@@ -222,8 +222,8 @@ def main():
     os.makedirs(RESULT_ROOT, exist_ok=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--video', type=str, required=True, help='Path to input video')
+    parser.add_argument('-s', '--scale', type=float, required=True, help='Upscale factor')
     parser.add_argument('--sparse_ratio', type=float, default=2.0, help='Sparse ratio. Recommended: 1.5 or 2.0. 1.5 → faster; 2.0 → more stable.')
-    parser.add_argument('--scale', type=float, required=True, help='Upscale factor')
     args = parser.parse_args()
 
     inputs = [args.video]
