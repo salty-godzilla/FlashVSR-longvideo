@@ -299,7 +299,9 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         tea_cache_model_id="Wan2.1-T2V-14B",
         progress_bar_cmd=tqdm,
         progress_bar_st=None,
-        LQ_video=None,
+        #LQ_video=None,
+        get_input_frames=None, # (start_idx, end_idx) -> Tensor[1, 3, frames, h, w]
+        put_output_frames=None, #(Tensor) -> None
         is_full_block=False,
         if_buffer=False,
         topk_ratio=2.0,
@@ -309,6 +311,9 @@ class FlashVSRTinyLongPipeline(BasePipeline):
     ):
         # 只接受 cfg=1.0（与原代码一致）
         assert cfg_scale == 1.0, "cfg_scale must be 1.0"
+
+        if get_input_frames is None or put_output_frames is None:
+             raise ValueError("get_input_frames and put_output_frames callbacks are required to save memory.")
 
         # 要求：必须先 init_cross_kv()
         if self.prompt_emb_posi is None or 'context' not in self.prompt_emb_posi:
@@ -328,13 +333,13 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         # Tiler 参数
         tiler_kwargs = {"tiled": tiled, "tile_size": tile_size, "tile_stride": tile_stride}
 
-        # 初始化噪声
-        if if_buffer:
-            noise = self.generate_noise((1, 16, (num_frames - 1) // 4, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
-        else:
-            noise = self.generate_noise((1, 16, (num_frames - 1) // 4 + 1, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
-        # noise = noise.to(dtype=self.torch_dtype, device=self.device)
-        latents = noise
+        # # 初始化噪声
+        # if if_buffer:
+        #     noise = self.generate_noise((1, 16, (num_frames - 1) // 4, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
+        # else:
+        #     noise = self.generate_noise((1, 16, (num_frames - 1) // 4 + 1, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
+        # # noise = noise.to(dtype=self.torch_dtype, device=self.device)
+        # latents = noise
 
         process_total_num = (num_frames - 1) // 8 - 2
         is_stream = True
@@ -346,7 +351,7 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         self.TCDecoder.clean_mem()
         LQ_pre_idx = 0
         LQ_cur_idx = 0
-        frames_total = []
+        # frames_total = []
 
         with torch.no_grad():
             for cur_process_idx in tqdm(range(process_total_num)):
@@ -356,9 +361,18 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                     LQ_latents = None
                     inner_loop_num = 7
                     for inner_idx in range(inner_loop_num):
+                        f_start = max(0, inner_idx*4-3)
+                        f_end = (inner_idx+1)*4-3
+                        
+                        chunk = get_input_frames(f_start, f_end)
+                        if chunk is None: continue
+                        chunk = chunk.to(self.device)
+
                         cur = self.denoising_model().LQ_proj_in.stream_forward(
-                            LQ_video[:, :, max(0, inner_idx*4-3):(inner_idx+1)*4-3, :, :].to(self.device)
-                        ) if LQ_video is not None else None
+                            chunk
+                        )
+                        del chunk
+
                         if cur is None:
                             continue
                         if LQ_latents is None:
@@ -367,14 +381,30 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                             for layer_idx in range(len(LQ_latents)):
                                 LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
                     LQ_cur_idx = (inner_loop_num-1)*4-3
-                    cur_latents = latents[:, :, :6, :, :]
+                    
+                    # cur_latents = latents[:, :, :6, :, :]
+                    cur_latents = self.generate_noise(
+                        (1, 16, 6, height // 8, width // 8),
+                        seed=seed,
+                        device=self.device,
+                        dtype=self.torch_dtype
+                    )
                 else:
                     LQ_latents = None
                     inner_loop_num = 2
                     for inner_idx in range(inner_loop_num):
+                        f_start = cur_process_idx*8+17+inner_idx*4
+                        f_end = cur_process_idx*8+21+inner_idx*4
+                        
+                        chunk = get_input_frames(f_start, f_end)
+                        if chunk is None: continue
+                        chunk = chunk.to(self.device)
+
                         cur = self.denoising_model().LQ_proj_in.stream_forward(
-                            LQ_video[:, :, cur_process_idx*8+17+inner_idx*4:cur_process_idx*8+21+inner_idx*4, :, :].to(self.device)
-                        ) if LQ_video is not None else None
+                            chunk
+                        )
+                        del chunk
+
                         if cur is None:
                             continue
                         if LQ_latents is None:
@@ -383,7 +413,16 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                             for layer_idx in range(len(LQ_latents)):
                                 LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
                     LQ_cur_idx = cur_process_idx*8+21+(inner_loop_num-2)*4
-                    cur_latents = latents[:, :, 4+cur_process_idx*2:6+cur_process_idx*2, :, :]
+                    
+                    # cur_latents = latents[:, :, 4+cur_process_idx*2:6+cur_process_idx*2, :, :] ---
+                    # seed をずらしてパターン重複を回避
+                    current_seed = seed + cur_process_idx if seed is not None else None
+                    cur_latents = self.generate_noise(
+                        (1, 16, 2, height // 8, width // 8),
+                        seed=current_seed,
+                        device=self.device,
+                        dtype=self.torch_dtype
+                    )
 
                 # 推理（无 motion_controller / vace）
                 noise_pred_posi, pre_cache_k, pre_cache_v = model_fn_wan_video(
@@ -409,15 +448,18 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                 # 更新 latent
                 cur_latents = cur_latents - noise_pred_posi
                 # Decode
-                cur_LQ_frame = LQ_video[:,:,LQ_pre_idx:LQ_cur_idx,:,:].to(self.device)
-                cur_frames = self.TCDecoder.decode_video(cur_latents.transpose(1, 2),parallel=False, show_progress_bar=False, cond=LQ_video[:,:,LQ_pre_idx:LQ_cur_idx,:,:].to(self.device)).transpose(1, 2).mul_(2).sub_(1)
+                ref_chunk = get_input_frames(LQ_pre_idx, LQ_cur_idx)
+                if ref_chunk is not None:
+                     ref_chunk = ref_chunk.to(self.device)
+                
+                cur_frames = self.TCDecoder.decode_video(cur_latents.transpose(1, 2),parallel=False, show_progress_bar=False, cond=ref_chunk).transpose(1, 2).mul_(2).sub_(1)
 
                 # 颜色校正（wavelet）
                 try:
-                    if color_fix:
+                    if color_fix and ref_chunk is not None:
                         cur_frames = self.ColorCorrector(
                             cur_frames.to(device=self.device),
-                            cur_LQ_frame,
+                            ref_chunk,
                             clip_range=(-1, 1),
                             chunk_size=None,
                             method='adain'
@@ -425,12 +467,19 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                 except:
                     pass
 
-                frames_total.append(cur_frames.to('cpu'))
+                if ref_chunk is not None:
+                    del ref_chunk
+
+                put_output_frames(cur_frames.to('cpu'))
+                
+                del cur_frames
+                torch.cuda.empty_cache()
+
                 LQ_pre_idx = LQ_cur_idx
 
-            frames = torch.cat(frames_total, dim=2)
+            # frames = torch.cat(frames_total, dim=2)
 
-        return frames[0]
+        return None
 
 
 # -----------------------------
