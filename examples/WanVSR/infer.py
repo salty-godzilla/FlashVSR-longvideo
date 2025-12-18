@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os, re, time, threading, argparse, uuid
-from queue import Queue
+from queue import Queue, Full
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
@@ -206,7 +206,7 @@ class AsyncVideoLoader:
 class AsyncVideoWriter:
     def __init__(self, output_path, output_params):
         self.writer = WriteGear(output=output_path, compression_mode=True, logging=False, **output_params)
-        self.queue = Queue()
+        self.queue = Queue(maxsize=100)
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
         
@@ -220,7 +220,15 @@ class AsyncVideoWriter:
             self.queue.task_done()
             
     def write(self, frame):
-        self.queue.put(frame)
+        warned = False
+        while True:
+            try:
+                self.queue.put(frame, timeout=1.0)
+                return
+            except Full:
+                if not warned:
+                    print(f"[AsyncVideoWriter] Queue full ({self.queue.maxsize}). Writer is lagging, waiting...")
+                    warned = True
         
     def close(self):
         self.queue.put(None)
