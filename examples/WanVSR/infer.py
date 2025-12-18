@@ -281,7 +281,7 @@ def main():
     parser.add_argument('--sparse_ratio', type=float, default=2.0, help='Sparse ratio. Recommended: 1.5 or 2.0. 1.5 → faster; 2.0 → more stable.')
     args = parser.parse_args()
 
-    inputs = [os.path.abspath(args.video)]
+    p = os.path.abspath(args.video)
 
     abspath = os.path.abspath(__file__)
     dname = os.path.dirname(abspath)
@@ -293,122 +293,108 @@ def main():
     seek_start = args.seek_start
     pipe = init_pipeline()
 
-    for p in inputs:
-        torch.cuda.empty_cache(); torch.cuda.ipc_collect()
-        name = os.path.basename(p.rstrip('/'))
-        if name.startswith('.'):
-            continue
-        
-        try:
-            # 1. Initialize Video Reader
-            print(f"Opening video: {p}")
-            stream = VideoGear(source=p, backend=cv2.CAP_FFMPEG).start()
-            
-            # Get Metadata
-            w0 = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
-            h0 = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = stream.stream.stream.get(cv2.CAP_PROP_FPS)
-            total = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_COUNT))
-            
-            print(f"[{name}] Original Resolution: {w0}x{h0} | Original Frames: {total} | FPS: {fps}")
+    torch.cuda.empty_cache(); torch.cuda.ipc_collect()
+    name = os.path.basename(p.rstrip('/'))
+    
+    # 1. Initialize Video Reader
+    print(f"Opening video: {p}")
+    stream = VideoGear(source=p, backend=cv2.CAP_FFMPEG).start()
+    
+    # Get Metadata
+    w0 = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h0 = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = stream.stream.stream.get(cv2.CAP_PROP_FPS)
+    total = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    print(f"[{name}] Original Resolution: {w0}x{h0} | Original Frames: {total} | FPS: {fps}")
 
-            # Skip frames if requested
-            if seek_start > 0:
-                print(f"[{name}] Skipping first {seek_start} frames...")
-                for _ in range(seek_start):
-                    stream.read()
-                total -= seek_start
-                if total <= 0:
-                    raise ValueError(f"Total frames ({total + seek_start}) <= seek_start ({seek_start})")
-                print(f"[{name}] Processing {total} frames")
+    # Skip frames if requested
+    if seek_start > 0:
+        print(f"[{name}] Skipping first {seek_start} frames...")
+        for _ in range(seek_start):
+            stream.read()
+        total -= seek_start
+        if total <= 0:
+            raise ValueError(f"Total frames ({total + seek_start}) <= seek_start ({seek_start})")
+        print(f"[{name}] Processing {total} frames")
 
-            # 2. Compute Dimensions
-            sW, sH, tW, tH = compute_scaled_and_target_dims(w0, h0, scale=scale, multiple=128)
-            print(f"[{name}] Scaled (x{scale:.2f}): {sW}x{sH} -> Target (128-multiple): {tW}x{tH}")
+    # 2. Compute Dimensions
+    sW, sH, tW, tH = compute_scaled_and_target_dims(w0, h0, scale=scale, multiple=128)
+    print(f"[{name}] Scaled (x{scale:.2f}): {sW}x{sH} -> Target (128-multiple): {tW}x{tH}")
 
-            # 3. Compute Target Frames (Padding Logic)
-            # Original logic: idx = list(range(total)) + [total-1]*4, then F = largest_8n1_leq(...)
-            # Modified: Ensure output (F-4) >= total to prevent frame dropping
-            min_F = total + 4
-            F = ((min_F - 2) // 8 + 1) * 8 + 1
-            print(f"[{name}] Target Frames (8n-3): {F-4} (Original: {total})")
-            
-            # 4. Initialize Video Writer
-            stem = os.path.splitext(name)[0]
-            unique_suffix = uuid.uuid4().hex[:6]
-            default_filename = f"{stem}_{seek_start}_{unique_suffix}.mp4"
+    # 3. Compute Target Frames (Padding Logic)
+    # Original logic: idx = list(range(total)) + [total-1]*4, then F = largest_8n1_leq(...)
+    # Modified: Ensure output (F-4) >= total to prevent frame dropping
+    min_F = total + 4
+    F = ((min_F - 2) // 8 + 1) * 8 + 1
+    print(f"[{name}] Target Frames (8n-3): {F-4} (Original: {total})")
+    
+    # 4. Initialize Video Writer
+    stem = os.path.splitext(name)[0]
+    unique_suffix = uuid.uuid4().hex[:6]
+    default_filename = f"{stem}_{seek_start}_{unique_suffix}.mp4"
 
-            if args.output:
-                if os.path.isdir(args.output):
-                    save_path = os.path.join(args.output, default_filename)
-                else:
-                    save_path = args.output
-            else:
-                save_path = os.path.join(os.path.dirname(p), default_filename)
+    if args.output:
+        if os.path.isdir(args.output):
+            save_path = os.path.join(args.output, default_filename)
+        else:
+            save_path = args.output
+    else:
+        save_path = os.path.join(os.path.dirname(p), default_filename)
 
-            output_params = {
-                "-input_framerate": fps, 
-                "-vcodec": "libx264", 
-                "-crf": 16, 
-                "-movflags": "frag_keyframe+empty_moov+default_base_moof", 
-                "-color_primaries": "bt709", 
-                "-color_trc": "bt709", 
-                "-colorspace": "bt709", 
-                "-color_range": "tv"
-            }
-            writer = AsyncVideoWriter(
-                save_path, 
-                output_params,
-                total_frames=total,
-                seek_start=seek_start,
-                index_path=(save_path + ".txt") if args.save_last_index else None
-            )
-            
-            loader = AsyncVideoLoader(stream, w0, h0, scale, tW, tH, dtype)
+    output_params = {
+        "-input_framerate": fps, 
+        "-vcodec": "libx264", 
+        "-crf": 16, 
+        "-movflags": "frag_keyframe+empty_moov+default_base_moof", 
+        "-color_primaries": "bt709", 
+        "-color_trc": "bt709", 
+        "-colorspace": "bt709", 
+        "-color_range": "tv"
+    }
+    writer = AsyncVideoWriter(
+        save_path, 
+        output_params,
+        total_frames=total,
+        seek_start=seek_start,
+        index_path=(save_path + ".txt") if args.save_last_index else None
+    )
+    
+    loader = AsyncVideoLoader(stream, w0, h0, scale, tW, tH, dtype)
 
 
-            # 5. Define Callbacks
-            def get_input_chunk(start_idx, end_idx):
-                loader.set_target(end_idx)
-                loader.cleanup(start_idx - 100)
-                return loader.get_batch(start_idx, end_idx)
+    # 5. Define Callbacks
+    def get_input_chunk(start_idx, end_idx):
+        loader.set_target(end_idx)
+        loader.cleanup(start_idx - 100)
+        return loader.get_batch(start_idx, end_idx)
 
-            def save_output_chunk(video_tensor):
-                # video_tensor: 1 C F_chunk H W (CPU)
-                # Offload to writer thread
-                writer.write(video_tensor[0])
+    def save_output_chunk(video_tensor):
+        # video_tensor: 1 C F_chunk H W (CPU)
+        # Offload to writer thread
+        writer.write(video_tensor[0])
 
-            # 6. Run Pipeline
-            pipe(
-                prompt="", negative_prompt="", cfg_scale=1.0, num_inference_steps=1, seed=seed,
-                # LQ_video removed, use callbacks
-                get_input_frames=get_input_chunk,
-                put_output_frames=save_output_chunk,
-                num_frames=F, 
-                height=tH, width=tW, is_full_block=False, if_buffer=True,
-                topk_ratio=sparse_ratio*768*1280/(tH*tW), 
-                kv_ratio=3.0,
-                local_range=11,
-                color_fix = True,
-            )
+    # 6. Run Pipeline
+    pipe(
+        prompt="", negative_prompt="", cfg_scale=1.0, num_inference_steps=1, seed=seed,
+        # LQ_video removed, use callbacks
+        get_input_frames=get_input_chunk,
+        put_output_frames=save_output_chunk,
+        num_frames=F, 
+        height=tH, width=tW, is_full_block=False, if_buffer=True,
+        topk_ratio=sparse_ratio*768*1280/(tH*tW), 
+        kv_ratio=3.0,
+        local_range=11,
+        color_fix = True,
+    )
 
-            # 7. Cleanup
-            loader.stop()
-            stream.stop()
-            writer.close()
+    # 7. Cleanup
+    loader.stop()
+    stream.stop()
+    writer.close()
 
-            print(f"Saved: {save_path}")
+    print(f"Saved: {save_path}")
 
-        except Exception as e:
-            print(f"[Error] {name}: {e}")
-            try: loader.stop()
-            except: pass
-            try: stream.stop() 
-            except: pass
-            try: writer.close() 
-            except: pass
-
-            continue
 
     print("Done.")
 
