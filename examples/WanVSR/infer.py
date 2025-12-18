@@ -350,7 +350,7 @@ def main():
                 "-input_framerate": fps, 
                 "-vcodec": "libx264", 
                 "-crf": 16, 
-                "-movflags": "+faststart", 
+                "-movflags": "frag_keyframe+empty_moov+default_base_moof", 
                 "-color_primaries": "bt709", 
                 "-color_trc": "bt709", 
                 "-colorspace": "bt709", 
