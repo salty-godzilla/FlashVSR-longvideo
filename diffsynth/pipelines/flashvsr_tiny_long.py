@@ -351,7 +351,13 @@ class FlashVSRTinyLongPipeline(BasePipeline):
         self.TCDecoder.clean_mem()
         LQ_pre_idx = 0
         LQ_cur_idx = 0
-        # frames_total = []
+        
+        # 転送用の専用ストリーム（compute と transfer を並列化）
+        if not hasattr(self, "transfer_stream"):
+            self.transfer_stream = torch.cuda.Stream()
+        
+        pending_cpu_frames = None
+        pending_event = None
 
         with torch.no_grad():
             for cur_process_idx in tqdm(range(process_total_num)):
@@ -458,7 +464,7 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                 try:
                     if color_fix and ref_chunk is not None:
                         cur_frames = self.ColorCorrector(
-                            cur_frames.to(device=self.device),
+                            cur_frames,
                             ref_chunk,
                             clip_range=(-1, 1),
                             chunk_size=None,
@@ -470,12 +476,32 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                 if ref_chunk is not None:
                     del ref_chunk
 
-                put_output_frames(cur_frames.to('cpu'))
+                if pending_cpu_frames is not None:
+                    pending_event.synchronize()
+                    put_output_frames(pending_cpu_frames)
+                
+                compute_done_event = torch.cuda.Event()
+                compute_done_event.record()
+
+                with torch.cuda.stream(self.transfer_stream):
+                    self.transfer_stream.wait_event(compute_done_event)
+                    
+                    current_cpu_frames = cur_frames.detach().to('cpu', non_blocking=True)
+                    
+                    current_event = torch.cuda.Event()
+                    current_event.record()
+                
+                pending_cpu_frames = current_cpu_frames
+                pending_event = current_event
                 
                 del cur_frames
                 
                 LQ_pre_idx = LQ_cur_idx
 
+            if pending_cpu_frames is not None:
+                pending_event.synchronize()
+                put_output_frames(pending_cpu_frames)
+            
             # frames = torch.cat(frames_total, dim=2)
 
         return None
