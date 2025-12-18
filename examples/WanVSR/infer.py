@@ -223,6 +223,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--video', type=str, required=True, help='Path to input video')
     parser.add_argument('-s', '--scale', type=float, required=True, help='Upscale factor')
+    parser.add_argument('-ss', '--seek_start', type=int, default=0, help='Start frame index (default: 0)')
     parser.add_argument('--sparse_ratio', type=float, default=2.0, help='Sparse ratio. Recommended: 1.5 or 2.0. 1.5 → faster; 2.0 → more stable.')
     args = parser.parse_args()
 
@@ -230,6 +231,7 @@ def main():
     seed, dtype, device = 0, torch.bfloat16, 'cuda'
     scale = args.scale
     sparse_ratio = args.sparse_ratio
+    seek_start = args.seek_start
     pipe = init_pipeline()
 
     for p in inputs:
@@ -250,6 +252,16 @@ def main():
             total = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_COUNT))
             
             print(f"[{name}] Original Resolution: {w0}x{h0} | Original Frames: {total} | FPS: {fps}")
+
+            # Skip frames if requested
+            if seek_start > 0:
+                print(f"[{name}] Skipping first {seek_start} frames...")
+                for _ in range(seek_start):
+                    stream.read()
+                total -= seek_start
+                if total <= 0:
+                    raise ValueError(f"Total frames ({total + seek_start}) <= seek_start ({seek_start})")
+                print(f"[{name}] Processing {total} frames")
 
             # 2. Compute Dimensions
             sW, sH, tW, tH = compute_scaled_and_target_dims(w0, h0, scale=scale, multiple=128)
