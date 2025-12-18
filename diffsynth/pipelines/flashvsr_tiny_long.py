@@ -473,8 +473,7 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                 put_output_frames(cur_frames.to('cpu'))
                 
                 del cur_frames
-                torch.cuda.empty_cache()
-
+                
                 LQ_pre_idx = LQ_cur_idx
 
             # frames = torch.cat(frames_total, dim=2)

@@ -204,36 +204,72 @@ class AsyncVideoLoader:
                     del self.buffer[k]
 
 class AsyncVideoWriter:
-    def __init__(self, output_path, output_params):
+    def __init__(self, output_path, output_params, total_frames, seek_start, index_path=None):
         self.writer = WriteGear(output=output_path, compression_mode=True, logging=False, **output_params)
-        self.queue = Queue(maxsize=100)
+        self.queue = Queue(maxsize=10) # Buffer for chunks
+        self.total_frames = total_frames
+        self.seek_start = seek_start
+        self.saved_count = 0
+        
+        self.index_file_handle = None
+        if index_path:
+            try:
+                self.index_file_handle = open(index_path, "w")
+                print(f"Tracking frame index in: {index_path}")
+            except Exception as e:
+                print(f"Failed to open index file: {e}")
+
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
-        
+
     def _worker(self):
         while True:
-            frame = self.queue.get()
-            if frame is None:
+            chunk = self.queue.get()
+            if chunk is None:
                 self.queue.task_done()
                 break
-            self.writer.write(frame)
-            self.queue.task_done()
             
-    def write(self, frame):
+            try:
+                # chunk: (C, T, H, W) on CPU
+                # Conversion happens in this thread, unblocking the main loop
+                pil_frames = tensor2video(chunk)
+                
+                for pf in pil_frames:
+                    if self.saved_count >= self.total_frames:
+                        continue
+                    frame_bgr = cv2.cvtColor(np.array(pf), cv2.COLOR_RGB2BGR)
+                    self.writer.write(frame_bgr)
+                    self.saved_count += 1
+                
+                if self.index_file_handle:
+                    last_index = self.seek_start + self.saved_count
+                    self.index_file_handle.seek(0)
+                    self.index_file_handle.write(str(last_index))
+                    self.index_file_handle.truncate()
+                    self.index_file_handle.flush()
+
+            except Exception as e:
+                print(f"[AsyncVideoWriter] Error: {e}")
+            finally:
+                self.queue.task_done()
+
+    def write(self, chunk):
         warned = False
         while True:
             try:
-                self.queue.put(frame, timeout=1.0)
+                self.queue.put(chunk, block=True, timeout=1.0)
                 return
             except Full:
                 if not warned:
-                    print(f"[AsyncVideoWriter] Queue full ({self.queue.maxsize}). Writer is lagging, waiting...")
+                    print(f"[AsyncVideoWriter] Queue full ({self.queue.maxsize}). Writer thread is lagging, waiting...")
                     warned = True
-        
+
     def close(self):
         self.queue.put(None)
         self.thread.join()
         self.writer.close()
+        if self.index_file_handle:
+            self.index_file_handle.close()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -320,18 +356,16 @@ def main():
                 "-colorspace": "bt709", 
                 "-color_range": "tv"
             }
-            writer = AsyncVideoWriter(save_path, output_params)
+            writer = AsyncVideoWriter(
+                save_path, 
+                output_params,
+                total_frames=total,
+                seek_start=seek_start,
+                index_path=(save_path + ".txt") if args.save_last_index else None
+            )
             
             loader = AsyncVideoLoader(stream, w0, h0, scale, tW, tH, dtype)
 
-            index_file_handle = None
-            if args.save_last_index:
-                txt_path = save_path + ".txt"
-                try:
-                    index_file_handle = open(txt_path, "w")
-                    print(f"Tracking frame index in: {txt_path}")
-                except Exception as e:
-                    print(f"Failed to open index file: {e}")
 
             # 5. Define Callbacks
             def get_input_chunk(start_idx, end_idx):
@@ -339,26 +373,10 @@ def main():
                 loader.cleanup(start_idx - 100)
                 return loader.get_batch(start_idx, end_idx)
 
-            saved_count = 0
             def save_output_chunk(video_tensor):
-                nonlocal saved_count
-                # video_tensor: 1 C F_chunk H W
-                pil_frames = tensor2video(video_tensor[0])
-                
-                for pf in pil_frames:
-                    if saved_count >= total:
-                        continue
-                    # Convert PIL RGB to CV2 BGR
-                    frame_bgr = cv2.cvtColor(np.array(pf), cv2.COLOR_RGB2BGR)
-                    writer.write(frame_bgr)
-                    saved_count += 1
-
-                if index_file_handle:
-                    last_index = seek_start + saved_count
-                    index_file_handle.seek(0)
-                    index_file_handle.write(str(last_index))
-                    index_file_handle.truncate()
-                    index_file_handle.flush() # Ensure it's written to disk
+                # video_tensor: 1 C F_chunk H W (CPU)
+                # Offload to writer thread
+                writer.write(video_tensor[0])
 
             # 6. Run Pipeline
             pipe(
@@ -378,8 +396,7 @@ def main():
             loader.stop()
             stream.stop()
             writer.close()
-            if index_file_handle:
-                index_file_handle.close()
+
             print(f"Saved: {save_path}")
 
         except Exception as e:
@@ -390,9 +407,7 @@ def main():
             except: pass
             try: writer.close() 
             except: pass
-            if 'index_file_handle' in locals() and index_file_handle:
-                try: index_file_handle.close()
-                except: pass
+
             continue
 
     print("Done.")
