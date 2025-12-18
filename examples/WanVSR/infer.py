@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, re, time, threading, argparse
+import os, re, time, threading, argparse, uuid
 from queue import Queue
 import numpy as np
 from PIL import Image
@@ -218,16 +218,15 @@ class AsyncVideoWriter:
         self.writer.close()
 
 def main():
-    RESULT_ROOT = "./results"
-    os.makedirs(RESULT_ROOT, exist_ok=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--video', type=str, required=True, help='Path to input video')
     parser.add_argument('-s', '--scale', type=float, required=True, help='Upscale factor')
     parser.add_argument('-ss', '--seek_start', type=int, default=0, help='Start frame index (default: 0)')
+    parser.add_argument('-o', '--output', type=str, help='Output path or directory')
     parser.add_argument('--sparse_ratio', type=float, default=2.0, help='Sparse ratio. Recommended: 1.5 or 2.0. 1.5 → faster; 2.0 → more stable.')
     args = parser.parse_args()
 
-    inputs = [args.video]
+    inputs = [os.path.abspath(args.video)]
     seed, dtype, device = 0, torch.bfloat16, 'cuda'
     scale = args.scale
     sparse_ratio = args.sparse_ratio
@@ -275,7 +274,18 @@ def main():
             print(f"[{name}] Target Frames (8n-3): {F-4} (Original: {total})")
             
             # 4. Initialize Video Writer
-            save_path = os.path.join(RESULT_ROOT, f"FlashVSR_v1.1_Tiny_Long_{name.split('.')[0]}_seed{seed}.mp4")
+            stem = os.path.splitext(name)[0]
+            unique_suffix = uuid.uuid4().hex[:6]
+            default_filename = f"{stem}_{seek_start}_{unique_suffix}.mp4"
+
+            if args.output:
+                if os.path.isdir(args.output):
+                    save_path = os.path.join(args.output, default_filename)
+                else:
+                    save_path = args.output
+            else:
+                save_path = os.path.join(os.path.dirname(p), default_filename)
+
             output_params = {
                 "-input_framerate": fps, 
                 "-vcodec": "libx264", 
