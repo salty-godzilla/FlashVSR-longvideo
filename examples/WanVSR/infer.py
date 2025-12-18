@@ -246,6 +246,11 @@ def main():
     args = parser.parse_args()
 
     inputs = [os.path.abspath(args.video)]
+
+    abspath = os.path.abspath(__file__)
+    dname = os.path.dirname(abspath)
+    os.chdir(dname)
+
     seed, dtype, device = 0, torch.bfloat16, 'cuda'
     scale = args.scale
     sparse_ratio = args.sparse_ratio
