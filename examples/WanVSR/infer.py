@@ -269,7 +269,7 @@ def main():
             fps = stream.stream.stream.get(cv2.CAP_PROP_FPS)
             total = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_COUNT))
             
-            print(f"[{name}] Original Re{w0}x{h0} | Original Frames: {total} | FPS: {fps}")
+            print(f"[{name}] Original Resolution: {w0}x{h0} | Original Frames: {total} | FPS: {fps}")
 
             # Skip frames if requested
             if seek_start > 0:
@@ -332,7 +332,7 @@ def main():
             def get_input_chunk(start_idx, end_idx):
                 loader.set_target(end_idx)
                 loader.cleanup(start_idx - 100)
-                return loader.get_batch(start_solution: idx, end_idx)
+                return loader.get_batch(start_idx, end_idx)
 
             saved_count = 0
             def save_output_chunk(video_tensor):
