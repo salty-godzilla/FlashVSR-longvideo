@@ -1,6 +1,7 @@
 import types
 import os
 import time
+import concurrent.futures
 from typing import Optional, Tuple, Literal
 
 import torch
@@ -349,86 +350,125 @@ class FlashVSRTinyLongPipeline(BasePipeline):
             self.dit.LQ_proj_in.clear_cache()
 
         self.TCDecoder.clean_mem()
-        LQ_pre_idx = 0
-        LQ_cur_idx = 0
-        
         # 転送用の専用ストリーム（compute と transfer を並列化）
         if not hasattr(self, "transfer_stream"):
             self.transfer_stream = torch.cuda.Stream()
         
         pending_cpu_frames = None
         pending_event = None
+        
+        gpu_input_cache = []
+        LQ_pre_idx = 0
+        LQ_cur_idx = 0
+
+        def get_gpu_chunk(f_start, f_end):
+            for c_start, c_end, c_tensor in gpu_input_cache:
+                if c_start == f_start and c_end == f_end:
+                    return c_tensor
+            
+            cpu_chunk = get_input_frames(f_start, f_end)
+            if cpu_chunk is None: return None
+            
+            with torch.cuda.stream(self.transfer_stream):
+                gpu_chunk = cpu_chunk.to(self.device, non_blocking=True)
+                transfer_event = torch.cuda.Event()
+                transfer_event.record()
+            
+            transfer_event.synchronize()
+            gpu_input_cache.append((f_start, f_end, gpu_chunk))
+            if len(gpu_input_cache) > 20:
+                gpu_input_cache.pop(0)
+            return gpu_chunk
+
+        def get_gpu_ref_chunk(f_start, f_end):
+            if f_start >= f_end: return None
+            parts = []
+            current = f_start
+            while current < f_end:
+                found = False
+                for c_start, c_end, c_tensor in gpu_input_cache:
+                    if c_start <= current < c_end:
+                        take_start = current - c_start
+                        take_end = min(f_end - c_start, c_end - c_start)
+                        parts.append(c_tensor[:, :, take_start:take_end])
+                        current = c_start + take_end
+                        found = True
+                        break
+                if not found:
+                    missing_chunk = get_gpu_chunk(current, f_end)
+                    if missing_chunk is None: break
+                    continue
+            
+            if not parts: return None
+            return parts[0] if len(parts) == 1 else torch.cat(parts, dim=2)
+
+        # 入力先読み
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        next_input_future = None
+
+        def get_input_ranges(idx):
+            if idx == 0:
+                return [(max(0, i*4-3), (i+1)*4-3) for i in range(7)]
+            else:
+                return [(idx*8+17+i*4, idx*8+21+i*4) for i in range(2)]
+
+        def prefetch_task(ranges):
+            return [(s, e, get_input_frames(s, e)) for s, e in ranges]
+
+        next_input_future = executor.submit(prefetch_task, get_input_ranges(0))
 
         with torch.no_grad():
             for cur_process_idx in tqdm(range(process_total_num)):
+                current_chunks = next_input_future.result()
+                if cur_process_idx + 1 < process_total_num:
+                    next_input_future = executor.submit(prefetch_task, get_input_ranges(cur_process_idx + 1))
+                
                 if cur_process_idx == 0:
                     pre_cache_k = [None] * len(self.dit.blocks)
                     pre_cache_v = [None] * len(self.dit.blocks)
                     LQ_latents = None
-                    inner_loop_num = 7
-                    for inner_idx in range(inner_loop_num):
-                        f_start = max(0, inner_idx*4-3)
-                        f_end = (inner_idx+1)*4-3
-                        
-                        chunk = get_input_frames(f_start, f_end)
-                        if chunk is None: continue
-                        chunk = chunk.to(self.device)
+                    
+                    for f_start, f_end, cpu_chunk in current_chunks:
+                        if cpu_chunk is None: continue
+                        with torch.cuda.stream(self.transfer_stream):
+                            gpu_chunk = cpu_chunk.to(self.device, non_blocking=True)
+                            transfer_event = torch.cuda.Event()
+                            transfer_event.record()
+                        transfer_event.synchronize()
+                        gpu_input_cache.append((f_start, f_end, gpu_chunk))
 
-                        cur = self.denoising_model().LQ_proj_in.stream_forward(
-                            chunk
-                        )
-                        del chunk
-
-                        if cur is None:
-                            continue
+                        cur = self.denoising_model().LQ_proj_in.stream_forward(gpu_chunk)
+                        if cur is None: continue
                         if LQ_latents is None:
                             LQ_latents = cur
                         else:
                             for layer_idx in range(len(LQ_latents)):
                                 LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
-                    LQ_cur_idx = (inner_loop_num-1)*4-3
                     
-                    # cur_latents = latents[:, :, :6, :, :]
-                    cur_latents = self.generate_noise(
-                        (1, 16, 6, height // 8, width // 8),
-                        seed=seed,
-                        device=self.device,
-                        dtype=self.torch_dtype
-                    )
+                    LQ_cur_idx = (7-1)*4-3
+                    cur_latents = self.generate_noise((1, 16, 6, height // 8, width // 8), seed=seed, device=self.device, dtype=self.torch_dtype)
                 else:
                     LQ_latents = None
-                    inner_loop_num = 2
-                    for inner_idx in range(inner_loop_num):
-                        f_start = cur_process_idx*8+17+inner_idx*4
-                        f_end = cur_process_idx*8+21+inner_idx*4
-                        
-                        chunk = get_input_frames(f_start, f_end)
-                        if chunk is None: continue
-                        chunk = chunk.to(self.device)
+                    for f_start, f_end, cpu_chunk in current_chunks:
+                        if cpu_chunk is None: continue
+                        with torch.cuda.stream(self.transfer_stream):
+                            gpu_chunk = cpu_chunk.to(self.device, non_blocking=True)
+                            transfer_event = torch.cuda.Event()
+                            transfer_event.record()
+                        transfer_event.synchronize()
+                        gpu_input_cache.append((f_start, f_end, gpu_chunk))
 
-                        cur = self.denoising_model().LQ_proj_in.stream_forward(
-                            chunk
-                        )
-                        del chunk
-
-                        if cur is None:
-                            continue
+                        cur = self.denoising_model().LQ_proj_in.stream_forward(gpu_chunk)
+                        if cur is None: continue
                         if LQ_latents is None:
                             LQ_latents = cur
                         else:
                             for layer_idx in range(len(LQ_latents)):
                                 LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
-                    LQ_cur_idx = cur_process_idx*8+21+(inner_loop_num-2)*4
                     
-                    # cur_latents = latents[:, :, 4+cur_process_idx*2:6+cur_process_idx*2, :, :] ---
-                    # seed をずらしてパターン重複を回避
+                    LQ_cur_idx = cur_process_idx*8+21
                     current_seed = seed + cur_process_idx if seed is not None else None
-                    cur_latents = self.generate_noise(
-                        (1, 16, 2, height // 8, width // 8),
-                        seed=current_seed,
-                        device=self.device,
-                        dtype=self.torch_dtype
-                    )
+                    cur_latents = self.generate_noise((1, 16, 2, height // 8, width // 8), seed=current_seed, device=self.device, dtype=self.torch_dtype)
 
                 # 推理（无 motion_controller / vace）
                 noise_pred_posi, pre_cache_k, pre_cache_v = model_fn_wan_video(
@@ -454,9 +494,11 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                 # 更新 latent
                 cur_latents = cur_latents - noise_pred_posi
                 # Decode
-                ref_chunk = get_input_frames(LQ_pre_idx, LQ_cur_idx)
-                if ref_chunk is not None:
-                     ref_chunk = ref_chunk.to(self.device)
+                ref_chunk = get_gpu_ref_chunk(LQ_pre_idx, LQ_cur_idx)
+                
+                # 古いキャッシュの整理（メモリ節約）
+                if len(gpu_input_cache) > 20: 
+                    gpu_input_cache = gpu_input_cache[-20:]
                 
                 cur_frames = self.TCDecoder.decode_video(cur_latents.transpose(1, 2),parallel=False, show_progress_bar=False, cond=ref_chunk).transpose(1, 2).mul_(2).sub_(1)
 
@@ -502,7 +544,8 @@ class FlashVSRTinyLongPipeline(BasePipeline):
                 pending_event.synchronize()
                 put_output_frames(pending_cpu_frames)
             
-            # frames = torch.cat(frames_total, dim=2)
+            executor.shutdown(wait=False)
+            gpu_input_cache.clear()
 
         return None
 

@@ -148,7 +148,7 @@ class AsyncVideoLoader:
                 current_last_frame = img
                 
                 img_out = upscale_then_center_crop(img, self.scale, self.tW, self.tH)
-                tensor_f = pil_to_tensor_neg1_1(img_out, self.dtype, 'cpu')
+                tensor_f = pil_to_tensor_neg1_1(img_out, self.dtype, 'cpu').pin_memory() # Pinned memory for fast async transfer
                 
                 with self.lock:
                     self.buffer[self.read_head] = tensor_f
