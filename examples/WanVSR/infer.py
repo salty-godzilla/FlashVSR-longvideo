@@ -233,6 +233,7 @@ def main():
     parser.add_argument('-s', '--scale', type=float, required=True, help='Upscale factor')
     parser.add_argument('-ss', '--seek_start', type=int, default=0, help='Start frame index (default: 0)')
     parser.add_argument('-o', '--output', type=str, help='Output path or directory')
+    parser.add_argument('-idx', '--save_last_index', action='store_true', help='Save the last processed frame index to a txt file')
     parser.add_argument('--sparse_ratio', type=float, default=2.0, help='Sparse ratio. Recommended: 1.5 or 2.0. 1.5 → faster; 2.0 → more stable.')
     args = parser.parse_args()
 
@@ -260,7 +261,7 @@ def main():
             fps = stream.stream.stream.get(cv2.CAP_PROP_FPS)
             total = int(stream.stream.stream.get(cv2.CAP_PROP_FRAME_COUNT))
             
-            print(f"[{name}] Original Resolution: {w0}x{h0} | Original Frames: {total} | FPS: {fps}")
+            print(f"[{name}] Original Re{w0}x{h0} | Original Frames: {total} | FPS: {fps}")
 
             # Skip frames if requested
             if seek_start > 0:
@@ -310,11 +311,20 @@ def main():
             
             loader = AsyncVideoLoader(stream, w0, h0, scale, tW, tH, dtype)
 
+            index_file_handle = None
+            if args.save_last_index:
+                txt_path = save_path + ".txt"
+                try:
+                    index_file_handle = open(txt_path, "w", buffering=0)  # Unbuffered writing or line buffering
+                    print(f"Tracking frame index in: {txt_path}")
+                except Exception as e:
+                    print(f"Failed to open index file: {e}")
+
             # 5. Define Callbacks
             def get_input_chunk(start_idx, end_idx):
                 loader.set_target(end_idx)
                 loader.cleanup(start_idx - 100)
-                return loader.get_batch(start_idx, end_idx)
+                return loader.get_batch(start_solution: idx, end_idx)
 
             saved_count = 0
             def save_output_chunk(video_tensor):
@@ -329,6 +339,13 @@ def main():
                     frame_bgr = cv2.cvtColor(np.array(pf), cv2.COLOR_RGB2BGR)
                     writer.write(frame_bgr)
                     saved_count += 1
+
+                if index_file_handle:
+                    last_index = seek_start + saved_count
+                    index_file_handle.seek(0)
+                    index_file_handle.write(str(last_index))
+                    index_file_handle.truncate()
+                    index_file_handle.flush() # Ensure it's written to disk
 
             # 6. Run Pipeline
             pipe(
@@ -348,6 +365,8 @@ def main():
             loader.stop()
             stream.stop()
             writer.close()
+            if index_file_handle:
+                index_file_handle.close()
             print(f"Saved: {save_path}")
 
         except Exception as e:
@@ -358,6 +377,9 @@ def main():
             except: pass
             try: writer.close() 
             except: pass
+            if 'index_file_handle' in locals() and index_file_handle:
+                try: index_file_handle.close()
+                except: pass
             continue
 
     print("Done.")
