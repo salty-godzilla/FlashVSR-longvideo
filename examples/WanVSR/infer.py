@@ -328,7 +328,7 @@ def main():
             if args.save_last_index:
                 txt_path = save_path + ".txt"
                 try:
-                    index_file_handle = open(txt_path, "w", buffering=0)  # Unbuffered writing or line buffering
+                    index_file_handle = open(txt_path, "w")
                     print(f"Tracking frame index in: {txt_path}")
                 except Exception as e:
                     print(f"Failed to open index file: {e}")
