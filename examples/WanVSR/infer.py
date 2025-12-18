@@ -180,12 +180,12 @@ class AsyncVideoLoader:
         
         frames = []
         with self.lock:
-            # Debug: Check how many frames ahead we are when called
-            ahead = self.read_head - end_idx
-            print(f"[Debug] get_batch({start_idx}:{end_idx}) | ReadHead: {self.read_head} | Ahead: {ahead}")
-            
+            warned = False
             while self.read_head <= max_needed:
                 if self.error: raise self.error
+                if not warned:
+                    print(f"[AsyncVideoLoader] Buffer underrun. Video reading is lagging, waiting... (ReadHead: {self.read_head}, Needed: {max_needed + 1})")
+                    warned = True
                 self.cond.wait()
             
             for i in needed:
