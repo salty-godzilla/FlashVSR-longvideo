@@ -635,19 +635,26 @@ def model_fn_wan_video(
     topk = int(square_num * topk_ratio) - 1
     kv_len = int(kv_ratio)
 
-    # RoPE 位置（分段）
+    # RoPE 位置 (無限長対応)
+    head_dim = dit.dim // dit.num_heads
+    f_dim = head_dim - 2 * (head_dim // 3)
+    
     if cur_process_idx == 0:
-        freqs = torch.cat([
-            dit.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-            dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-            dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
-        ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
+        t_start, t_end = 0, f
     else:
-        freqs = torch.cat([
-            dit.freqs[0][4 + cur_process_idx*2:4 + cur_process_idx*2 + f].view(f, 1, 1, -1).expand(f, h, w, -1),
-            dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-            dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
-        ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
+        t_start, t_end = 4 + cur_process_idx * 2, 4 + cur_process_idx * 2 + f
+    
+    # 時間方向の RoPE をオンデマンドで生成 (double)
+    t_indices = torch.arange(t_start, t_end, device=x.device).double()
+    f_base = 1.0 / (10000.0 ** (torch.arange(0, f_dim, 2, device=x.device)[: (f_dim // 2)].double() / f_dim))
+    f_freqs = torch.outer(t_indices, f_base)
+    f_freqs_cis = torch.polar(torch.ones_like(f_freqs), f_freqs) # complex
+
+    freqs = torch.cat([
+        f_freqs_cis.view(f, 1, 1, -1).expand(f, h, w, -1),
+        dit.freqs[1][:h].to(x.device).view(1, h, 1, -1).expand(f, h, w, -1),
+        dit.freqs[2][:w].to(x.device).view(1, 1, w, -1).expand(f, h, w, -1)
+    ], dim=-1).reshape(f * h * w, 1, -1)
 
     # TeaCache（默认不启用）
     tea_cache_update = tea_cache.check(dit, x, t_mod) if tea_cache is not None else False
