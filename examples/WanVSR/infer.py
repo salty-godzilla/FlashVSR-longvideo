@@ -230,13 +230,15 @@ class AsyncVideoWriter:
                 break
             
             try:
+                if self.saved_count >= self.total_frames:
+                    continue
+
                 # chunk: (C, T, H, W) on CPU
-                # Conversion happens in this thread, unblocking the main loop
                 pil_frames = tensor2video(chunk)
                 
                 for pf in pil_frames:
                     if self.saved_count >= self.total_frames:
-                        continue
+                        break
                     frame_bgr = cv2.cvtColor(np.array(pf), cv2.COLOR_RGB2BGR)
                     self.writer.write(frame_bgr)
                     self.saved_count += 1
@@ -252,6 +254,8 @@ class AsyncVideoWriter:
                 print(f"[AsyncVideoWriter] Error: {e}")
             finally:
                 self.queue.task_done()
+        
+        self.writer.close()
 
     def write(self, chunk):
         warned = False
@@ -265,9 +269,12 @@ class AsyncVideoWriter:
                     warned = True
 
     def close(self):
-        self.queue.put(None)
-        self.thread.join()
-        self.writer.close()
+        if self.thread.is_alive():
+            self.queue.put(None)
+            while self.thread.is_alive():
+                print(f"[AsyncVideoWriter] Finalizing video... (Pending chunks: {self.queue.qsize()})")
+                self.thread.join(timeout=10.0)
+        
         if self.index_file_handle:
             self.index_file_handle.close()
 
